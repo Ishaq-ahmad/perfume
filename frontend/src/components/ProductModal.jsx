@@ -1,0 +1,803 @@
+import { useState, useEffect, useRef } from "react";
+import { useForm, Controller } from "react-hook-form";
+import CreatableSelect from 'react-select/creatable';
+import { zodResolver } from "@hookform/resolvers/zod";
+import { productSchema } from "../schemas/productSchema";
+import { X, Upload, Loader2, Star, Box, Package, Sparkles, UserCheck, ImageIcon, Link as LinkIcon, ShieldCheck, Camera, Plus, Banknote, CreditCard, AlertCircle } from "lucide-react";
+import { uploadImages } from "../services/api";
+import { toast } from "sonner";
+
+export function ProductModal({ isOpen, onClose, onSave, product, mode, categories = [] }) {
+  const { register, handleSubmit, reset, setValue, getValues, watch, control, formState: { errors } } = useForm({
+    resolver: zodResolver(productSchema),
+    defaultValues: {
+      name: "", category: "", stock: 0, minStock: 0, price: 0, costPrice: 0,
+      unitType: "box", traysPerPeti: 12, eggsPerTray: 30,
+      petiQuantity: 0, trayQuantity: 0, eggQuantity: 0,
+      supplierName: "", totalPurchaseCost: 0, amountPaidToSupplier: 0, dueAmountToSupplier: 0, paymentMethod: "Cash",
+      paymentReceipt: "", images: [], description: "", mfgDate: "", expiryDate: ""
+    }
+  });
+
+  const [uploading, setUploading] = useState(false);
+  const [selectedImageIndex, setSelectedImageIndex] = useState(0);
+  const [imageUrlInput, setImageUrlInput] = useState("");
+  const fileInputRef = useRef(null);
+
+  const images = watch("images") || [];
+  const currentCategory = watch("category");
+  const unitType = watch("unitType") || "peti";
+
+  const watchedPetiQty = watch("petiQuantity") || 0;
+  const watchedTrayQty = watch("trayQuantity") || 0;
+  const watchedEggQty = watch("eggQuantity") || 0;
+  const watchedTraysPerPeti = watch("traysPerPeti") || 12;
+  const watchedEggsPerTray = watch("eggsPerTray") || 30;
+  const watchedCostPrice = watch("costPrice") || 0;
+  const watchedAmountPaid = watch("amountPaidToSupplier") || 0;
+  const watchedPaymentMethod = watch("paymentMethod") || "Cash";
+  const isBankMode = String(watchedPaymentMethod).toLowerCase().includes('bank') || String(watchedPaymentMethod).toLowerCase().includes('online');
+
+  // Live Unit & Stock Conversions
+  const tPerPetiVal = Number(watchedTraysPerPeti) || 12;
+  const ePerTrayVal = Number(watchedEggsPerTray) || 30;
+  const eggsPerPeti = tPerPetiVal * ePerTrayVal;
+
+  const totalEggsCalculated = Number(watchedEggQty) > 0 
+    ? Number(watchedEggQty) 
+    : (Number(watchedPetiQty) > 0 
+        ? Math.round(Number(watchedPetiQty) * eggsPerPeti) 
+        : (Number(watchedTrayQty) > 0 ? Math.round(Number(watchedTrayQty) * ePerTrayVal) : 0));
+
+  const totalTraysCalculated = totalEggsCalculated > 0 
+    ? Number((totalEggsCalculated / ePerTrayVal).toFixed(1)) 
+    : 0;
+
+  const totalPetisCalculated = totalEggsCalculated > 0 
+    ? Number((totalEggsCalculated / (eggsPerPeti || 360)).toFixed(2)) 
+    : 0;
+
+  const watchedPrice = watch("price") || 0;
+
+  // Live Supplier Bill & Due Calculations (uses costPrice or sale price as fallback)
+  const unitRate = Number(watchedCostPrice) > 0 ? Number(watchedCostPrice) : Number(watchedPrice);
+  const calculatedTotalBill = Number(watchedPetiQty) > 0 
+    ? (Number(watchedPetiQty) * unitRate) 
+    : (totalEggsCalculated > 0 ? (totalEggsCalculated * (unitRate / (eggsPerPeti || 360))) : 0);
+
+  const [hasUserEditedPayment, setHasUserEditedPayment] = useState(false);
+
+  // Auto-sync amountPaidToSupplier with calculatedTotalBill when bill updates ONLY if user hasn't typed a custom amount
+  useEffect(() => {
+    if (isOpen && mode !== "view" && !hasUserEditedPayment) {
+      if (calculatedTotalBill > 0) {
+        setValue("amountPaidToSupplier", calculatedTotalBill);
+      }
+    }
+  }, [calculatedTotalBill, isOpen, mode, setValue, hasUserEditedPayment]);
+
+  const watchedPaidNum = watchedAmountPaid !== undefined && watchedAmountPaid !== '' && !isNaN(Number(watchedAmountPaid)) 
+    ? Number(watchedAmountPaid) 
+    : 0;
+  const calculatedDue = Math.max(0, calculatedTotalBill - watchedPaidNum);
+
+  const handleAddImageUrl = () => {
+    if (!imageUrlInput.trim() || images.length >= 5) return;
+    const url = imageUrlInput.trim();
+    if (!url.startsWith('http')) return;
+    setValue("images", [...images, url]);
+    setImageUrlInput("");
+    if (images.length === 0) setSelectedImageIndex(0);
+  };
+
+  // Sync form with product prop
+  useEffect(() => {
+    if (isOpen) {
+      setHasUserEditedPayment(mode === "edit" || mode === "view");
+      if (product && mode !== "add") {
+        const tPerP = product.traysPerPeti || 12;
+        const ePerT = product.eggsPerTray || 30;
+        const ePerP = tPerP * ePerT;
+
+        const totalStockEggs = product.stock || (product.petiQuantity ? Math.round(product.petiQuantity * ePerP) : (product.eggQuantity || 0)) || 0;
+        const initialPeti = product.petiQuantity !== undefined && product.petiQuantity !== null && product.petiQuantity > 0
+          ? product.petiQuantity
+          : (totalStockEggs > 0 ? Number((totalStockEggs / ePerP).toFixed(2)) : 0);
+        const initialTray = product.trayQuantity !== undefined && product.trayQuantity !== null && product.trayQuantity > 0
+          ? product.trayQuantity
+          : (initialPeti > 0 ? Number((initialPeti * tPerP).toFixed(1)) : (totalStockEggs > 0 ? Number((totalStockEggs / ePerT).toFixed(1)) : 0));
+        const initialEgg = product.eggQuantity !== undefined && product.eggQuantity !== null && product.eggQuantity > 0
+          ? product.eggQuantity
+          : (totalStockEggs > 0 ? totalStockEggs : (initialPeti > 0 ? Math.round(initialPeti * ePerP) : 0));
+
+        reset({
+          name: product.name || "",
+          category: (product.category && !product.category.toLowerCase().includes('egg')) ? product.category : "",
+          unitType: product.unitType || "box",
+          traysPerPeti: tPerP,
+          eggsPerTray: ePerT,
+          petiQuantity: initialPeti,
+          trayQuantity: initialTray,
+          eggQuantity: initialEgg,
+          stock: totalStockEggs || initialEgg,
+          minStock: product.minStock || 0,
+          price: product.price || 0,
+          costPrice: product.costPrice || 0,
+          supplierName: product.supplierName || "",
+          supplierPhone: product.supplierPhone || product.supplierContact || "",
+          supplierLocation: product.supplierLocation || product.farmLocation || "",
+          totalPurchaseCost: product.totalPurchaseCost || 0,
+          amountPaidToSupplier: product.amountPaidToSupplier !== undefined ? product.amountPaidToSupplier : (product.totalPurchaseCost || 0),
+          cashPaidToSupplier: product.cashPaidToSupplier || 0,
+          bankPaidToSupplier: product.bankPaidToSupplier || 0,
+          dueAmountToSupplier: product.dueAmountToSupplier || 0,
+          paymentMethod: product.paymentMethod || "Cash",
+          isOnlinePayment: Boolean(product.isOnlinePayment),
+          paymentReceipt: product.paymentReceipt || "",
+          images: product.images || [],
+          description: product.description || "",
+          mfgDate: product.mfgDate ? new Date(product.mfgDate).toISOString().split('T')[0] : "",
+          expiryDate: product.expiryDate ? new Date(product.expiryDate).toISOString().split('T')[0] : "",
+        });
+      } else {
+        reset({
+          name: "",
+          category: "",
+          unitType: "box",
+          traysPerPeti: 12,
+          eggsPerTray: 30,
+          petiQuantity: 0,
+          trayQuantity: 0,
+          eggQuantity: 0,
+          stock: 0,
+          minStock: 0,
+          price: 0,
+          costPrice: 0,
+          supplierName: "",
+          supplierPhone: "",
+          supplierLocation: "",
+          totalPurchaseCost: 0,
+          amountPaidToSupplier: 0,
+          dueAmountToSupplier: 0,
+          paymentMethod: "Cash",
+          paymentReceipt: "",
+          images: [],
+          description: "",
+          mfgDate: "",
+          expiryDate: ""
+        });
+      }
+      setSelectedImageIndex(0);
+    }
+  }, [product, mode, isOpen, reset]);
+
+  const onSubmit = (data) => {
+    const tPerPeti = parseFloat(data.traysPerPeti) || 12;
+    const ePerTray = parseFloat(data.eggsPerTray) || 30;
+    const ePerPeti = tPerPeti * ePerTray;
+
+    const pQty = parseFloat(data.petiQuantity) || 0;
+    const tQty = parseFloat(data.trayQuantity) || (pQty > 0 ? Number((pQty * tPerPeti).toFixed(1)) : 0);
+    const eQty = parseFloat(data.eggQuantity) || (pQty > 0 ? Math.round(pQty * ePerPeti) : (tQty > 0 ? Math.round(tQty * ePerTray) : 0));
+
+    const finalStock = eQty > 0 ? eQty : (pQty > 0 ? Math.round(pQty * ePerPeti) : (parseFloat(data.stock) || 0));
+
+    const costPriceVal = parseFloat(data.costPrice) || 0;
+    const salePriceVal = parseFloat(data.price) || 0;
+    const effectiveUnitPrice = costPriceVal > 0 ? costPriceVal : salePriceVal;
+
+    let computedBill = calculatedTotalBill;
+    if (computedBill <= 0) {
+      if (pQty > 0) {
+        computedBill = pQty * effectiveUnitPrice;
+      } else if (finalStock > 0) {
+        computedBill = finalStock * (effectiveUnitPrice / ePerPeti);
+      }
+    }
+
+    const totalBill = computedBill > 0 ? computedBill : (parseFloat(data.totalPurchaseCost) || 0);
+    
+    // Explicit paid & due parsing
+    let paidAmt = 0;
+    if (data.amountPaidToSupplier !== undefined && data.amountPaidToSupplier !== "" && !isNaN(parseFloat(data.amountPaidToSupplier))) {
+      paidAmt = Math.max(0, parseFloat(data.amountPaidToSupplier));
+    } else {
+      paidAmt = hasUserEditedPayment ? 0 : totalBill;
+    }
+
+    const dueAmt = Math.max(0, totalBill - paidAmt);
+    const rawMethod = String(data.paymentMethod || "Cash").trim();
+    const isOnlineOrBank = rawMethod.toLowerCase().includes('bank') || rawMethod.toLowerCase().includes('online') || data.isOnlinePayment === true;
+
+    let cashPaid = 0;
+    let bankPaid = 0;
+    if (isOnlineOrBank) {
+      bankPaid = paidAmt;
+      cashPaid = 0;
+    } else {
+      cashPaid = paidAmt;
+      bankPaid = 0;
+    }
+
+    let determinedMethod = "Cash";
+    if (isOnlineOrBank) {
+      determinedMethod = dueAmt > 0 && paidAmt === 0 
+        ? "Credit" 
+        : (dueAmt > 0 ? "Partial Bank Transfer" : "Bank Transfer");
+    } else {
+      determinedMethod = dueAmt > 0 && paidAmt === 0 
+        ? "Credit" 
+        : (dueAmt > 0 ? "Partial Cash" : "Cash");
+    }
+
+    const payload = {
+      ...data,
+      name: data.name?.trim() || product?.name || "",
+      category: data.category || currentCategory || product?.category || "Eggs",
+      unitType: data.unitType || "peti",
+      traysPerPeti: tPerPeti,
+      eggsPerTray: ePerTray,
+      petiQuantity: pQty,
+      trayQuantity: tQty,
+      eggQuantity: eQty,
+      stock: finalStock,
+      minStock: parseFloat(data.minStock) ?? product?.minStock ?? 0,
+      price: parseFloat(data.price) ?? product?.price ?? 0,
+      costPrice: parseFloat(data.costPrice) ?? product?.costPrice ?? 0,
+      supplierName: data.supplierName?.trim() || "",
+      supplierPhone: data.supplierPhone?.trim() || "",
+      supplierLocation: data.supplierLocation?.trim() || "",
+      totalPurchaseCost: totalBill,
+      amountPaidToSupplier: paidAmt,
+      cashPaidToSupplier: cashPaid,
+      bankPaidToSupplier: bankPaid,
+      dueAmountToSupplier: dueAmt,
+      paymentMethod: determinedMethod,
+      paymentReceipt: data.paymentReceipt || "",
+      isOnlinePayment: isOnlineOrBank,
+      images: images && images.length > 0 ? images : (product?.images || []),
+      description: data.description ?? "",
+      lastUpdated: new Date().toISOString().split("T")[0],
+    };
+
+    if (!data.mfgDate) delete payload.mfgDate;
+    if (!data.expiryDate) delete payload.expiryDate;
+
+    onSave(payload);
+    onClose();
+  };
+
+
+  const handleFileChange = async (e) => {
+    const files = Array.from(e.target.files);
+    if (files.length === 0) return;
+
+    try {
+      setUploading(true);
+      const newImageUrls = await uploadImages(files);
+      setValue("images", [...images, ...newImageUrls].slice(0, 5));
+      toast.success("Product picture uploaded!");
+    } catch (error) {
+      toast.error("Image upload failed.");
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/85 backdrop-blur-md animate-in fade-in duration-200">
+      <div className="absolute inset-0" onClick={onClose} />
+
+      {/* Sleek Compact Professional Form Card */}
+      <div className="relative w-full max-w-[460px] bg-[#1E293B] border border-slate-700/80 rounded-2xl sm:rounded-3xl shadow-2xl animate-in zoom-in-95 duration-200 overflow-hidden z-10 mx-auto flex flex-col max-h-[90vh] text-white">
+
+        {/* Modal Header */}
+        <div className="flex items-center justify-between px-4 py-2.5 border-b border-slate-700/60 bg-slate-900/90 shrink-0">
+          <div className="flex items-center gap-2.5">
+            <div className="p-1.5 bg-emerald-500/20 border border-emerald-500/40 rounded-xl text-emerald-400">
+              <Package className="w-4 h-4" />
+            </div>
+            <div>
+              <h2 className="text-sm font-black tracking-tight text-white uppercase">
+                {mode === "add" ? "Add Product & Stock" : mode === "edit" ? "Edit Product" : "View Product"}
+              </h2>
+              <p className="text-[9px] font-bold text-emerald-400 uppercase tracking-wider">Perfume Shop • Stock Entry</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1 hover:bg-slate-800 rounded-lg transition-all text-slate-400 hover:text-white border border-slate-700/60 cursor-pointer"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+
+        {/* Form Body - Compact & Clean Layout */}
+        <form onSubmit={handleSubmit(onSubmit)} className="p-3.5 overflow-y-auto space-y-2.5 scrollbar-thin scrollbar-thumb-slate-700 flex-1 text-xs">
+
+          {/* COMPACT PRODUCT PICTURE SECTION */}
+          <div className="p-2 bg-slate-900/90 rounded-xl border border-emerald-500/30 space-y-1.5">
+            <div className="flex items-center justify-between">
+              <label className="text-[10px] font-black text-emerald-400 uppercase tracking-wider flex items-center gap-1">
+                <Camera className="w-3 h-3 text-emerald-400" />
+                Product Picture ({images.length}/5)
+              </label>
+              {mode !== "view" && images.length < 5 && (
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={uploading}
+                  className="px-2 py-0.5 bg-emerald-600 hover:bg-emerald-500 text-white font-black text-[8.5px] uppercase rounded-md tracking-wider flex items-center gap-1 shadow transition-all active:scale-95 cursor-pointer"
+                >
+                  {uploading ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Upload className="w-2.5 h-2.5" />}
+                  <span>+ Upload</span>
+                </button>
+              )}
+            </div>
+
+            {/* Compact Picture Display Box */}
+            <div className="relative w-full h-16 bg-slate-800 rounded-lg overflow-hidden border border-slate-700 flex items-center justify-center group">
+              {images.length > 0 && images[selectedImageIndex] ? (
+                <>
+                  <img
+                    src={images[selectedImageIndex]}
+                    alt="Product Preview"
+                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                  />
+                  {mode !== "view" && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const newImages = images.filter((_, i) => i !== selectedImageIndex);
+                        setValue("images", newImages);
+                        setSelectedImageIndex(Math.max(0, selectedImageIndex - 1));
+                      }}
+                      className="absolute top-1 right-1 p-0.5 bg-rose-600/90 hover:bg-rose-600 text-white rounded-md shadow transition-all cursor-pointer"
+                      title="Remove Picture"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  )}
+                </>
+              ) : (
+                <div
+                  onClick={() => mode !== "view" && fileInputRef.current?.click()}
+                  className="flex items-center justify-center gap-1.5 text-slate-400 cursor-pointer hover:text-emerald-300 transition-colors p-1 text-center"
+                >
+                  {uploading ? (
+                    <Loader2 className="w-4 h-4 animate-spin text-emerald-400" />
+                  ) : (
+                    <Camera className="w-4 h-4 text-slate-500" />
+                  )}
+                  <span className="text-[10px] font-black uppercase tracking-wider">
+                    {uploading ? "Uploading..." : "+ Click to Upload Picture"}
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {/* Gallery Thumbnails & URL Option Row */}
+            {images.length > 1 && (
+              <div className="flex gap-1 overflow-x-auto pb-0.5">
+                {images.map((img, idx) => (
+                  <div
+                    key={idx}
+                    onClick={() => setSelectedImageIndex(idx)}
+                    className={`relative w-6 h-6 rounded-md overflow-hidden border cursor-pointer transition-all ${
+                      selectedImageIndex === idx ? 'border-emerald-500 shadow scale-105' : 'border-slate-700 opacity-60 hover:opacity-100'
+                    }`}
+                  >
+                    <img src={img} className="w-full h-full object-cover" />
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Image URL Input Option */}
+            {mode !== "view" && images.length < 5 && (
+              <div className="flex gap-1 relative">
+                <LinkIcon className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-500" />
+                <input
+                  type="text"
+                  value={imageUrlInput}
+                  onChange={(e) => setImageUrlInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      handleAddImageUrl();
+                    }
+                  }}
+                  placeholder="Paste image URL (http://...)"
+                  className="flex-1 bg-slate-800 border border-slate-700 rounded-md py-0.5 pl-6 pr-1.5 text-[9.5px] font-bold text-white outline-none focus:border-emerald-500 placeholder:text-slate-500"
+                />
+                <button
+                  type="button"
+                  onClick={handleAddImageUrl}
+                  disabled={!imageUrlInput.trim()}
+                  className="px-2 bg-slate-700 hover:bg-slate-600 text-white font-black text-[9px] uppercase tracking-wider rounded-md border border-slate-600 disabled:opacity-40 cursor-pointer"
+                >
+                  Add
+                </button>
+              </div>
+            )}
+            <input type="file" ref={fileInputRef} onChange={handleFileChange} accept="image/*" multiple className="hidden" />
+          </div>
+
+          {/* Section 1: Product Name */}
+          <div className="space-y-1">
+            <label className="text-[10.5px] font-black text-slate-300 uppercase tracking-wider">Product Name *</label>
+            <input
+              {...register("name")}
+              disabled={mode === "view"}
+              className={`w-full bg-slate-800 border ${errors.name ? 'border-rose-500' : 'border-slate-700'} rounded-xl py-1.5 px-3 text-xs font-bold text-white outline-none focus:border-emerald-500 placeholder:text-slate-500`}
+              placeholder="e.g. Amber Oud Perfume 100ml"
+            />
+            {errors.name && <p className="text-rose-400 text-[10px] font-bold uppercase">{errors.name.message}</p>}
+          </div>
+
+          {/* Category & Primary Unit Grid */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div className="space-y-1">
+              <label className="text-[10.5px] font-black text-slate-300 uppercase tracking-wider">Category</label>
+              <Controller
+                name="category"
+                control={control}
+                render={({ field }) => {
+                  const existingCats = Array.from(new Set((categories || []).filter(c => c && c !== "All" && !c.toLowerCase().includes("egg"))));
+                  return (
+                    <CreatableSelect
+                      {...field}
+                      isClearable
+                      isDisabled={mode === 'view'}
+                      options={existingCats.map(c => ({ value: c, label: c }))}
+                      onChange={(val) => field.onChange(val ? val.value : "")}
+                      onCreateOption={(inputValue) => field.onChange(inputValue)}
+                      value={field.value ? { label: field.value, value: field.value } : null}
+                      placeholder="Enter category..."
+                      styles={{
+                        control: (base, state) => ({
+                          ...base,
+                          backgroundColor: '#1e293b',
+                          borderRadius: "0.75rem",
+                          minHeight: "32px",
+                          fontSize: "11px",
+                          borderColor: state.isFocused ? '#10b981' : '#334155',
+                          fontWeight: 'bold',
+                          color: '#fff',
+                          boxShadow: 'none'
+                        }),
+                        menu: (base) => ({
+                          ...base,
+                          backgroundColor: '#0f172a',
+                          borderRadius: "0.75rem",
+                          fontSize: "11px",
+                          border: '1px solid #334155'
+                        }),
+                        option: (base, state) => ({
+                          ...base,
+                          backgroundColor: state.isFocused ? '#065f46' : 'transparent',
+                          color: '#fff',
+                          fontSize: "11px"
+                        }),
+                        singleValue: (base) => ({ ...base, color: '#fff' }),
+                        input: (base) => ({ ...base, color: '#fff' }),
+                      }}
+                    />
+                  );
+                }}
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-[10.5px] font-black text-slate-300 uppercase tracking-wider">Primary Unit</label>
+              <div className="flex bg-slate-800 p-0.5 rounded-xl border border-slate-700">
+                {['piece', 'bottle', 'box', 'pack'].map((type) => (
+                  <button
+                    key={type}
+                    type="button"
+                    onClick={() => setValue('unitType', type)}
+                    className={`flex-1 py-1 rounded-lg text-[10px] font-black uppercase transition-all cursor-pointer ${
+                      unitType === type ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    {type}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Section 2: Pricing */}
+          <div className="grid grid-cols-2 gap-2 p-2 bg-slate-900/60 rounded-xl border border-slate-700/60">
+            <div className="space-y-0.5">
+              <label className="text-[10px] font-black text-emerald-400 uppercase tracking-wider">Sale Price / {unitType.toUpperCase()} (Rs) *</label>
+              <input
+                type="number"
+                step="any"
+                {...register("price")}
+                disabled={mode === "view"}
+                className={`w-full bg-slate-800 border ${errors.price ? 'border-rose-500' : 'border-slate-700'} rounded-lg py-1 px-2 text-xs font-black text-emerald-400 outline-none focus:border-emerald-500`}
+                placeholder="0"
+              />
+            </div>
+
+            <div className="space-y-0.5">
+              <label className="text-[10px] font-black text-amber-400 uppercase tracking-wider">Cost Price / {unitType.toUpperCase()} (Rs)</label>
+              <input
+                type="number"
+                step="any"
+                {...register("costPrice")}
+                disabled={mode === "view"}
+                className="w-full bg-slate-800 border border-slate-700 rounded-lg py-1 px-2 text-xs font-black text-amber-400 outline-none focus:border-emerald-500"
+                placeholder="0"
+              />
+            </div>
+          </div>
+
+          {/* Section 3: Stock Inventory Breakdown */}
+          <div className="p-2.5 bg-slate-900/90 rounded-xl border border-emerald-500/30 space-y-1.5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5">
+                <Box className="w-3.5 h-3.5 text-emerald-400" />
+                <span className="text-[10px] font-black uppercase text-emerald-300 tracking-wider">Stock Quantities</span>
+              </div>
+              <span className="text-[8.5px] font-bold text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded-full border border-slate-700">1 Box = 12 Packs</span>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2">
+              <div className="space-y-0.5">
+                <label className="text-[9.5px] font-black text-amber-400 uppercase block">Boxes</label>
+                <input
+                  type="number"
+                  step="any"
+                  {...register("petiQuantity", {
+                    onChange: (e) => {
+                      const val = e.target.value;
+                      if (val === '' || isNaN(Number(val))) {
+                        setValue("trayQuantity", '');
+                        setValue("eggQuantity", '');
+                      } else {
+                        const num = parseFloat(val);
+                        const tPerP = parseFloat(watch("traysPerPeti")) || 12;
+                        const ePerT = parseFloat(watch("eggsPerTray")) || 30;
+                        setValue("trayQuantity", Number((num * tPerP).toFixed(1)));
+                        setValue("eggQuantity", Math.round(num * tPerP * ePerT));
+                      }
+                    }
+                  })}
+                  disabled={mode === "view"}
+                  className="w-full bg-slate-800 border border-amber-500/40 rounded-lg py-1 px-1.5 text-center text-xs font-black text-white outline-none focus:border-amber-400"
+                  placeholder="0"
+                />
+              </div>
+
+              <div className="space-y-0.5">
+                <label className="text-[9.5px] font-black text-teal-400 uppercase block">Packs</label>
+                <input
+                  type="number"
+                  step="any"
+                  {...register("trayQuantity", {
+                    onChange: (e) => {
+                      const val = e.target.value;
+                      if (val === '' || isNaN(Number(val))) {
+                        setValue("petiQuantity", '');
+                        setValue("eggQuantity", '');
+                      } else {
+                        const num = parseFloat(val);
+                        const tPerP = parseFloat(watch("traysPerPeti")) || 12;
+                        const ePerT = parseFloat(watch("eggsPerTray")) || 30;
+                        setValue("petiQuantity", Number((num / tPerP).toFixed(2)));
+                        setValue("eggQuantity", Math.round(num * ePerT));
+                      }
+                    }
+                  })}
+                  disabled={mode === "view"}
+                  className="w-full bg-slate-800 border border-teal-500/40 rounded-lg py-1 px-1.5 text-center text-xs font-black text-white outline-none focus:border-teal-400"
+                  placeholder="0"
+                />
+              </div>
+
+              <div className="space-y-0.5">
+                <label className="text-[9.5px] font-black text-emerald-400 uppercase block">Units</label>
+                <input
+                  type="number"
+                  step="any"
+                  {...register("eggQuantity", {
+                    onChange: (e) => {
+                      const val = e.target.value;
+                      if (val === '' || isNaN(Number(val))) {
+                        setValue("petiQuantity", '');
+                        setValue("trayQuantity", '');
+                      } else {
+                        const num = parseFloat(val);
+                        const tPerP = parseFloat(watch("traysPerPeti")) || 12;
+                        const ePerT = parseFloat(watch("eggsPerTray")) || 30;
+                        const ePerP = tPerP * ePerT;
+                        setValue("petiQuantity", Number((num / ePerP).toFixed(2)));
+                        setValue("trayQuantity", Number((num / ePerT).toFixed(1)));
+                      }
+                    }
+                  })}
+                  disabled={mode === "view"}
+                  className="w-full bg-slate-800 border border-emerald-500/40 rounded-lg py-1 px-1.5 text-center text-xs font-black text-white outline-none focus:border-emerald-400"
+                  placeholder="0"
+                />
+              </div>
+            </div>
+
+            {/* Live Calculated Stock Banner */}
+            <div className="p-1.5 bg-emerald-950/40 border border-emerald-500/20 rounded-lg flex items-center justify-between text-[10px] font-black text-emerald-300">
+              <span>Total Stock:</span>
+              <div className="flex gap-1.5">
+                <span className="text-amber-400">{totalPetisCalculated} Boxes</span>
+                <span className="text-slate-500">•</span>
+                <span className="text-teal-400">{totalTraysCalculated} Packs</span>
+                <span className="text-slate-500">•</span>
+                <span className="text-emerald-400">{totalEggsCalculated.toLocaleString()} Units</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Section 4: Supplier Information & Payment Method */}
+          <div className="p-2.5 bg-slate-900/95 rounded-xl border border-slate-700/80 space-y-1.5">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-1 flex-wrap gap-1.5">
+              <span className="text-[10.5px] font-black uppercase text-teal-300 flex items-center gap-1.5 tracking-wider">
+                <UserCheck className="w-3.5 h-3.5 text-teal-400" /> Supplier &amp; Payment
+              </span>
+              
+              {/* Payment Method Switcher (Cash vs Bank Online) */}
+              <div className="flex items-center p-0.5 bg-slate-800 rounded-lg border border-slate-700">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setValue("paymentMethod", "Cash");
+                    setValue("isOnlinePayment", false);
+                  }}
+                  disabled={mode === "view"}
+                  className={`px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider flex items-center gap-1 transition-all cursor-pointer ${
+                    !isBankMode
+                      ? 'bg-emerald-600 text-white shadow-sm'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <Banknote className="w-2.5 h-2.5" /> Cash
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setValue("paymentMethod", "Bank Transfer");
+                    setValue("isOnlinePayment", true);
+                  }}
+                  disabled={mode === "view"}
+                  className={`px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider flex items-center gap-1 transition-all cursor-pointer ${
+                    isBankMode
+                      ? 'bg-indigo-600 text-white shadow-sm'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <CreditCard className="w-2.5 h-2.5" /> Bank
+                </button>
+              </div>
+            </div>
+
+            {/* Supplier Info Inputs */}
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-0.5">
+                <label className="text-[9.5px] font-black text-slate-300 uppercase">Supplier Name</label>
+                <input
+                  type="text"
+                  {...register("supplierName")}
+                  disabled={mode === "view"}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-lg py-1 px-2 text-xs font-bold text-white outline-none focus:border-teal-400 placeholder:text-slate-500"
+                  placeholder="e.g. Perfume Supplier"
+                />
+              </div>
+
+              <div className="space-y-0.5">
+                <label className="text-[9.5px] font-black text-teal-400 uppercase">Supplier Phone</label>
+                <input
+                  type="text"
+                  {...register("supplierPhone")}
+                  disabled={mode === "view"}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-lg py-1 px-2 text-xs font-bold text-white outline-none focus:border-teal-400 placeholder:text-slate-500"
+                  placeholder="e.g. 0300-1234567"
+                />
+              </div>
+            </div>
+
+            {/* Amount Paid to Supplier */}
+            <div className="space-y-1 pt-0.5">
+              <div className="flex items-center justify-between">
+                <label className={`text-[9.5px] font-black uppercase ${isBankMode ? 'text-indigo-400' : 'text-emerald-400'}`}>
+                  {isBankMode ? 'Bank Paid (Rs.)' : 'Cash Paid (Rs.)'}
+                </label>
+                {calculatedTotalBill > 0 && mode !== "view" && (
+                  <div className="flex gap-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setValue("amountPaidToSupplier", calculatedTotalBill);
+                        setHasUserEditedPayment(true);
+                      }}
+                      className="px-1.5 py-0.5 rounded text-[8.5px] font-black bg-emerald-900/60 hover:bg-emerald-800 text-emerald-300 border border-emerald-500/40 cursor-pointer"
+                    >
+                      100% Paid
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setValue("amountPaidToSupplier", 0);
+                        setHasUserEditedPayment(true);
+                      }}
+                      className="px-1.5 py-0.5 rounded bg-rose-900/60 hover:bg-rose-800 text-rose-300 text-[8.5px] font-black border border-rose-500/40 cursor-pointer"
+                    >
+                      Credit
+                    </button>
+                  </div>
+                )}
+              </div>
+              <input
+                type="number"
+                step="any"
+                {...register("amountPaidToSupplier", {
+                  onChange: () => setHasUserEditedPayment(true)
+                })}
+                disabled={mode === "view"}
+                className="w-full bg-slate-800 border border-slate-700 rounded-lg py-1 px-2 text-xs font-black text-white outline-none focus:border-emerald-400"
+                placeholder="0"
+              />
+            </div>
+
+            {/* Bill Summary Banner */}
+            <div className="grid grid-cols-3 gap-1.5 bg-slate-800/90 p-1.5 rounded-lg border border-slate-700 text-[10px]">
+              <div className="flex flex-col">
+                <span className="text-[8.5px] font-black text-slate-400 uppercase">Total:</span>
+                <span className="font-black text-amber-300 text-xs">Rs. {calculatedTotalBill.toLocaleString()}</span>
+              </div>
+              <div className="flex flex-col border-l border-slate-700 pl-1.5">
+                <span className={`text-[8.5px] font-black uppercase ${isBankMode ? 'text-indigo-400' : 'text-emerald-400'}`}>
+                  Paid:
+                </span>
+                <span className={`font-black text-xs ${isBankMode ? 'text-indigo-400' : 'text-emerald-400'}`}>
+                  Rs. {watchedPaidNum.toLocaleString()}
+                </span>
+              </div>
+              <div className="flex flex-col border-l border-slate-700 pl-1.5">
+                <span className="text-[8.5px] font-black text-rose-400 uppercase">Due:</span>
+                <span className={`font-black text-xs ${calculatedDue > 0 ? 'text-rose-400' : 'text-slate-400'}`}>
+                  Rs. {calculatedDue.toLocaleString()}
+                </span>
+              </div>
+            </div>
+          </div>
+
+        </form>
+
+        {/* Modal Footer Actions */}
+        <div className="p-2.5 border-t border-slate-700/60 bg-slate-900/90 flex gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex-1 py-2 px-3 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl font-black text-[11px] uppercase tracking-wider transition-all cursor-pointer"
+          >
+            {mode === "view" ? "Close" : "Cancel"}
+          </button>
+          {mode !== "view" && (
+            <button
+              type="button"
+              onClick={handleSubmit(onSubmit, (errs) => console.error('[Form Validation Error]', errs))}
+              className="flex-[1.5] py-2 px-4 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-xl font-black text-[11px] uppercase tracking-wider shadow-md transition-all active:scale-95 border-t border-emerald-400/30 cursor-pointer"
+            >
+              {mode === "add" ? "Create Product" : "Save Changes"}
+            </button>
+          )}
+        </div>
+
+      </div>
+    </div>
+  );
+}
